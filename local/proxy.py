@@ -38,8 +38,9 @@ class Common(object):
         self.GAE_APPIDS     = self.config.get('gae', 'appid').replace('.appspot.com', '').split('|')
         self.GAE_PASSWORD   = self.config.get('gae', 'password').strip()
         self.GAE_DEBUG      = self.config.get('gae', 'debug')
-        self.GAE_FORCEHTTPS = set(self.config.get('gae', 'forcehttps').split('|'))
         self.GAE_PATH       = self.config.get('gae', 'path')
+        self.GAE_FORCEHTTPS = set(self.config.get('gae', 'forcehttps').split('|'))
+        self.GAE_AUTORANGE  = tuple(self.config.get('gae', 'autorange').split('|'))
         self.GAE_BINDHOSTS  = dict((host, self.GAE_APPIDS[0]) for host in self.config.get('gae', 'bindhosts').split('|')) if self.config.has_option('gae', 'bindhosts') else {}
         self.GAE_CERTS      = self.config.get('gae', 'certs').split('|')
 
@@ -313,9 +314,8 @@ def gae_decode_data(qs):
     return dict((k, binascii.a2b_hex(v)) for k, v in (x.split('=') for x in qs.split('&')))
 
 class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
-    partSize = 1024000
-    fetchTimeout = 5
-    FR_Headers = ('', 'host', 'vary', 'via', 'x-forwarded-for', 'proxy-authorization', 'proxy-connection', 'upgrade', 'keep-alive')
+    part_size = 1048576
+    skip_headers = set(['', 'host', 'vary', 'via', 'x-forwarded-for', 'proxy-authorization', 'proxy-connection', 'upgrade', 'keep-alive'])
     opener = None
     opener_lock = threading.Lock()
 
@@ -453,7 +453,7 @@ class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             data['code'] = 200
             del data['headers']['content-range']
         data['headers']['content-length'] = end-start+1
-        partSize = self.__class__.partSize
+        partSize = GaeProxyHandler.part_size
         self.send_response(data['code'])
         for k,v in data['headers'].iteritems():
             self.send_header(k.title(), v)
@@ -660,8 +660,8 @@ class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
                 pass
 
     def do_METHOD_GAE(self):
+        host = self.headers.dict.get('host')
         if self.path[0] == '/':
-            host = self.headers['host']
             if host.endswith(':80'):
                 host = host[:-3]
             self.path = 'http://%s%s' % (host , self.path)
@@ -672,13 +672,11 @@ class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         else:
             payload = ''
 
-        for k in self.__class__.FR_Headers:
-            try:
-                del self.headers[k]
-            except KeyError:
-                pass
+        headers = ''.join('%s: %s\r\n' % (k, v) for k, v in self.headers.dict.iteritems() if k not in GaeProxyHandler.skip_headers)
+        if host and host.endswith(common.GAE_AUTORANGE):
+            headers += 'Range: bytes=0-%d\r\n' % GaeProxyHandler.part_size
 
-        retval, data = self._fetch(self.path, self.command, self.headers, payload)
+        retval, data = self._fetch(self.path, self.command, headers, payload)
         try:
             if retval == -1:
                 return self.end_error(502, str(data))
