@@ -1,0 +1,16 @@
+application: your_appid
+version: 1
+runtime: python
+api_version: 1
+
+inbound_services:
+- xmpp_message
+
+handlers:
+- url: /_ah/xmpp/message/chat/
+  script: fetch.py
+  secure: optional
+
+- url: /fetch\.py
+  script: fetch.py
+  secure: optional
