@@ -7,7 +7,7 @@ __version__ = 'beta'
 __author__ =  'phus.lu@gmail.com'
 __password__ = ''
 
-import zlib, logging, time, re, struct, base64
+import zlib, logging, time, re, struct, base64, binascii
 from google.appengine.ext import webapp
 from google.appengine.ext import db
 from google.appengine.ext.webapp.util import run_wsgi_app
@@ -15,11 +15,11 @@ from google.appengine.api import urlfetch
 from google.appengine.api import xmpp
 from google.appengine.runtime import apiproxy_errors, DeadlineExceededError
 
-def encode_data(dic):
-    return '&'.join('%s=%s' % (k, str(v).encode('hex')) for k, v in dic.iteritems())
+def gae_encode_data(dic):
+    return '&'.join('%s=%s' % (k, binascii.b2a_hex(str(v))) for k, v in dic.iteritems())
 
-def decode_data(qs):
-    return dict((k, v.decode('hex')) for k, v in (x.split('=') for x in qs.split('&')))
+def gae_decode_data(qs):
+    return dict((k, binascii.a2b_hex(v)) for k, v in (x.split('=') for x in qs.split('&')))
 
 class MainHandler(webapp.RequestHandler):
 
@@ -32,7 +32,7 @@ class MainHandler(webapp.RequestHandler):
         self.response.headers['Content-Type'] = 'image/gif'  # fake header
         contentType = headers.get('content-type', '').lower()
 
-        headers = encode_data(headers)
+        headers = gae_encode_data(headers)
         # Build send-data
         rdata = '%s%s%s' % (struct.pack('>3I', status_code, len(headers), len(content)), headers, content)
         if contentType.startswith(('text', 'application')):
@@ -40,23 +40,23 @@ class MainHandler(webapp.RequestHandler):
             data = '1'+data if len(rdata)>len(data) else '0'+rdata
         else:
             data = '0' + rdata
-        if status_code == 555:
-            logging.warning('Response: "%s %s" %s' % (method, url, content))
+        if status_code > 500:
+            logging.warning('Response: "%s %s" %d %d/%d/%d', method, url, status_code, len(content), len(rdata), len(data))
         else:
-            logging.debug('Response: "%s %s" %d %d/%d/%d' % (method, url, status_code, len(content), len(rdata), len(data)))
+            logging.debug('Response: "%s %s" %d', method, url, status_code)
         return self.response.out.write(data)
 
     def sendXmppResponse(self, xmpp_message, status_code, headers, content='', method='', url=''):
         self.response.headers['Content-Type'] = 'application/octet-stream'
         contentType = headers.get('content-type', '').lower()
 
-        headers = encode_data(headers)
+        headers = gae_encode_data(headers)
         rdata = '%s%s%s' % (struct.pack('>3I', status_code, len(headers), len(content)), headers, content)
         data = '2' + base64.b64encode(rdata)
-        if status_code == 555:
-            logging.warning('Response: "%s %s" %s' % (method, url, content))
+        if status_code > 500:
+            logging.warning('Response: "%s %s" %d %d/%d/%d', method, url, status_code, len(content), len(rdata), len(data))
         else:
-            logging.debug('Response: "%s %s" %d %d/%d/%d' % (method, url, status_code, len(content), len(rdata), len(data)))
+            logging.debug('Response: "%s %s" %d', method, url, status_code)
         maxsize = 2000
         for i in xrange(0, len(data), maxsize):
             xmpp_message.reply(data[i:i+maxsize]+'\r\n')
@@ -73,11 +73,11 @@ class MainHandler(webapp.RequestHandler):
         xmpp_mode = (self.request.path == '/_ah/xmpp/message/chat/')
         if xmpp_mode:
             xmpp_message = xmpp.Message(self.request.POST)
-            request = decode_data(xmpp_message.body.replace('&amp;', '&'))
+            request = gae_decode_data(xmpp_message.body.replace('&amp;', '&'))
             logging.debug('MainHandler post get xmpp request %s', request)
         else:
             xmpp_message = None
-            request = decode_data(zlib.decompress(self.request.body))
+            request = gae_decode_data(zlib.decompress(self.request.body))
             #logging.debug('MainHandler post get fetch request %s', request)
 
         if __password__ and __password__ != request.get('password', ''):
@@ -99,11 +99,10 @@ class MainHandler(webapp.RequestHandler):
         rangeFetch = False
         headers = {}
         for line in request.get('headers', '').splitlines():
-            kv = line.split(':', 1)
-            if len(kv) != 2:
+            key, _, value = line.partition(':')
+            if not value:
                 continue
-            key = kv[0].strip().lower()
-            value = kv[1].strip()
+            key, value = key.strip().lower(), value.strip()
             #if key in MainHandler.FRS_Headers:
             #    continue
             if key == 'rangefetch':
@@ -199,7 +198,7 @@ class MainHandler(webapp.RequestHandler):
             <tr><td align="center"><hr></td></tr>
 
             <tr><td align="center">
-                更多相关介绍,请参考<a href="https://github.com/phus/goagent">GoAgent项目主页</a>.
+                更多相关介绍,请参考<a href="http://code.google.com/p/goagent/">GoAgent项目主页</a>.
             </td></tr>
             <tr><td align="center"><hr></td></tr>
 
@@ -213,7 +212,8 @@ class MainHandler(webapp.RequestHandler):
 ''' % dict(version=__version__))
 
 def main():
-    application = webapp.WSGIApplication([('/_ah/xmpp/message/chat/', MainHandler),('/fetch.py', MainHandler)],debug=True)
+    #application = webapp.WSGIApplication([('/_ah/xmpp/message/chat/', MainHandler),('/fetch.py', MainHandler)],debug=True)
+    application = webapp.WSGIApplication([('/fetch.py', MainHandler)], debug=True)
     run_wsgi_app(application)
 
 if __name__ == '__main__':
