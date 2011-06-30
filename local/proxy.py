@@ -41,7 +41,6 @@ class Common(object):
         self.GAE_PASSWORD   = self.config.get('gae', 'password').strip()
         self.GAE_DEBUG      = self.config.get('gae', 'debug')
         self.GAE_PATH       = self.config.get('gae', 'path')
-        self.GAE_AUTORANGE  = tuple(self.config.get('gae', 'autorange').split('|'))
         self.GAE_BINDHOSTS  = dict((host, self.GAE_APPIDS[0]) for host in self.config.get('gae', 'bindhosts').split('|')) if self.config.has_option('gae', 'bindhosts') else {}
         self.GAE_CERTS      = self.config.get('gae', 'certs').split('|')
 
@@ -60,6 +59,9 @@ class Common(object):
         self.GOOGLE_WINDOW     = self.config.getint('google', 'window')
         self.GOOGLE_WINDOW_ACK = 0
         self.GOOGLE_FORCEHTTPS = tuple(self.config.get('google', 'forcehttps').split('|'))
+
+        self.AUTORANGE_HOSTS    = tuple(self.config.get('autorange', 'hosts').split('|'))
+        self.AUTORANGE_ENDSWITH = tuple(self.config.get('autorange', 'endswith').split('|'))
 
         self.HOSTS = dict(self.config.items('hosts'))
 
@@ -118,7 +120,7 @@ class MultiplexConnection(object):
                     if common.GOOGLE_WINDOW_ACK > 10:
                         common.GOOGLE_WINDOW -= 1
                         common.GOOGLE_WINDOW_ACK = 0
-                        logging.warning('MultiplexConnection Connect OK 10 times, switch new window=%d', common.GOOGLE_WINDOW)
+                        logging.info('MultiplexConnection Connect OK 10 times, switch new window=%d', common.GOOGLE_WINDOW)
                 break
             else:
                 logging.warning('MultiplexConnection Cannot hosts %r:%r, switch new window=%d', hosts, port, window)
@@ -680,7 +682,7 @@ class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             payload = ''
 
         headers = ''.join('%s: %s\r\n' % (k, v) for k, v in self.headers.dict.iteritems() if k not in self.skip_headers)
-        if host and host.endswith(common.GAE_AUTORANGE):
+        if host.endswith(common.AUTORANGE_HOSTS) or self.path.endswith(common.AUTORANGE_ENDSWITH):
             headers += 'Range: bytes=0-%d\r\n' % self.part_size
 
         retval, data = self._fetch(self.path, self.command, headers, payload)
