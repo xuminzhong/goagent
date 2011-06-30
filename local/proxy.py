@@ -3,6 +3,11 @@
 # Based on GAppProxy 2.0.0 by Du XiaoGang <dugang@188.com>
 # Based on WallProxy 0.4.0 by hexieshe <www.ehust@gmail.com>
 
+from __future__ import with_statement
+
+import psyco
+psyco.full()
+
 __version__ = 'beta'
 __author__ =  'phus.lu@gmail.com'
 
@@ -63,16 +68,7 @@ class Common(object):
         self.AUTORANGE_HOSTS    = tuple(self.config.get('autorange', 'hosts').split('|'))
         self.AUTORANGE_ENDSWITH = tuple(self.config.get('autorange', 'endswith').split('|'))
 
-        self.HOSTS = dict(self.config.items('hosts'))
-
-    def select_appid(self, url):
-        appid = None
-        if len(self.GAE_APPIDS) == 1:
-            return self.GAE_APPIDS[0]
-        if self.GAE_BINDHOSTS:
-            appid = self.GAE_BINDHOSTS.get(urlparse.urlsplit(url)[1])
-        appid = appid or random.choice(self.GAE_APPIDS)
-        return appid
+        self.HOSTS = dict((k, v or socket.gethostbyname(k)) for k, v in self.config.items('hosts'))
 
     def info(self):
         info = ''
@@ -137,34 +133,56 @@ class MultiplexConnection(object):
             except:
                 pass
 
-_socket_create_connection = socket.create_connection
-def socket_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
-    host, port = address
-    logging.debug('socket_create_connection connect (%r, %r)', host, port)
-    if host.endswith(common.GOOGLE_SITES):
-        msg = 'socket_create_connection returns an empty list'
-        try:
-            hostslist = common.GOOGLE_HTTP if port == 80 else common.GOOGLE_HTTPS
-            logging.debug("socket_create_connection connect hostslist: (%r, %r)", hostslist, port)
-            conn = MultiplexConnection(hostslist, port, common.GOOGLE_TIMEOUT, common.GOOGLE_WINDOW)
-            conn.close()
-            soc = conn.socket
-            soc.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
-            return soc
-        except socket.error, msg:
-            logging.error('socket_create_connection connect fail: (%r, %r)', hostslist, port)
-            soc = None
-        if not soc:
-            raise socket.error, msg
-    else:
-        host = common.HOSTS.get(host) or socket.gethostbyname(host)
-        return _socket_create_connection((host, port), timeout)
-socket.create_connection = socket_create_connection
+_realHTTPConnection  = httplib.HTTPConnection
+_realHTTPSConnection = httplib.HTTPSConnection
+class HTTPConnection(_realHTTPConnection):
+    def connect(self):
+        if self.host.endswith(common.GOOGLE_SITES):
+            msg = 'MultiplexConnection returns an empty list'
+            try:
+                hostslist = common.GOOGLE_HTTPS if common.GOOGLE_PREFER == 'https' else common.GOOGLE_HTTP
+                logging.debug("HTTPConnection connect hostslist: (%r, %r)", hostslist, self.port)
+                conn = MultiplexConnection(hostslist, self.port, common.GOOGLE_TIMEOUT, common.GOOGLE_WINDOW)
+                conn.close()
+                self.sock = conn.socket
+            except socket.error, msg:
+                logging.error('HTTPConnection connect fail: (%r, %r)', hostslist, self.port)
+                self.sock = None
+            if not self.sock:
+                raise socket.error, msg
+        else:
+            _realHTTPConnection.connect()
+    def putrequest(self, method, url, skip_host=0, skip_accept_encoding=1):
+        _realHTTPConnection.putrequest(self, method, url, skip_host, skip_accept_encoding)
+class HTTPSConnection(HTTPConnection):
+    default_port = 443
+    def __init__(self, host, port=None, key_file=None, cert_file=None, strict=None):
+        HTTPConnection.__init__(self, host, port, strict)
+        self.key_file = key_file
+        self.cert_file = cert_file
+    def connect(self):
+        HTTPConnection.connect()
+        self.sock = ssl.wrap_socket(self.sock, self.key_file, self.cert_file)
+httplib.HTTPConnection  = HTTPConnection
+httplib.HTTPSConnection = HTTPSConnection
 
-_httplib_HTTPConnection_putrequest = httplib.HTTPConnection.putrequest
-def httplib_HTTPConnection_putrequest(self, method, url, skip_host=0, skip_accept_encoding=1):
-    return _httplib_HTTPConnection_putrequest(self, method, url, skip_host, skip_accept_encoding)
-httplib.HTTPConnection.putrequest = httplib_HTTPConnection_putrequest
+def socket_create_connection(address, timeout=None):
+    msg = "getaddrinfo returns an empty list"
+    host, port = address
+    host = common.HOSTS.get(host, host)
+    for res in socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM):
+        af, socktype, proto, canonname, sa = res
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            if isinstance(timeout,int):
+                sock.settimeout(timeout)
+            sock.connect(sa)
+            return sock
+        except socket.error, msg:
+            if sock is not None:
+                sock.close()
+    raise error, msg
 
 def socket_forward(local, remote, timeout=60, tick=2, maxping=None, maxpong=None):
     count = timeout // tick
@@ -383,7 +401,11 @@ class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         params = gae_encode_data(params)
         for i in range(1, 4):
             try:
-                appid = common.select_appid(url)
+                if len(common.GAE_APPIDS) == 1:
+                    appid = common.GAE_APPIDS[0]
+                elif common.GAE_BINDHOSTS:
+                    appid = self.GAE_BINDHOSTS.get(urlparse.urlsplit(url)[1])
+                appid = appid or random.choice(common.GAE_APPIDS)
                 logging.debug('GaeProxyHandler fetch %r appid=%r', url, appid)
                 if not common.PROXY_ENABLE:
                     fetchserver = '%s://%s.appspot.com%s' % (common.GOOGLE_PREFER, appid, common.GAE_PATH)
@@ -507,11 +529,11 @@ class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             logging.debug('GaeProxyHandler.do_CONNECT_Directt %s' % self.path)
             host, _, port = self.path.rpartition(':')
             if not common.PROXY_ENABLE:
-                soc = socket.create_connection((host, int(port)))
+                soc = socket_create_connection((host, int(port)))
                 self.log_request(200)
                 self.wfile.write('%s 200 Connection established\r\nProxy-agent: %s\r\n\r\n' % (self.protocol_version, self.version_string()))
             else:
-                soc = socket.create_connection((common.PROXY_HOST, common.PROXY_PORT))
+                soc = socket_create_connection((common.PROXY_HOST, common.PROXY_PORT))
                 if host.endswith(common.GOOGLE_SITES):
                     ip = random.choice(common.GOOGLE_HTTPS[0])
                 else:
@@ -638,10 +660,10 @@ class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         try:
             self.log_request()
             if not common.PROXY_ENABLE:
-                soc = socket.create_connection((host, port))
+                soc = socket_create_connection((host, port))
                 data = '%s %s %s\r\n'  % (self.command, urlparse.urlunparse(('', '', path, params, query, '')), self.request_version)
             else:
-                soc = socket.create_connection((common.PROXY_HOST, common.PROXY_PORT))
+                soc = socket_create_connection((common.PROXY_HOST, common.PROXY_PORT))
                 if host.endswith(common.GOOGLE_SITES):
                     host = random.choice(common.GOOGLE_HTTPS[0])
                 else:
