@@ -408,6 +408,8 @@ class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
                 if e.reason[0] in (11004, 10051, 10054, 10060, 'timed out'):
                     # it seems that google.cn is reseted, switch to https
                     if e.reason[0] == 10054:
+                        common.GOOGLE_WINDOW_ACK = 0
+                        common.GOOGLE_WINDOW = min(int(round(common.GOOGLE_WINDOW*1.6180339887498949)), 64)
                         common.GOOGLE_PREFER = 'https'
                         sys.stdout.write(common.info())
                 errors.append(str(e))
