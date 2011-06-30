@@ -125,7 +125,7 @@ class MultiplexConnection(object):
             else:
                 logging.warning('MultiplexConnection Cannot hosts %r:%r, switch new window=%d', hosts, port, window)
         else:
-            window = min(window+window/2, 64)
+            window = min(int(round(window*1.5)), 64)
             common.GOOGLE_WINDOW = window
             common.GOOGLE_WINDOW_ACK = 0
             logging.warning(r'MultiplexConnection Cannot Connect to hostslist %s:%s, switch new window=%d' % (hostslist, port, window))
@@ -409,7 +409,7 @@ class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
                     # it seems that google.cn is reseted, switch to https
                     if e.reason[0] == 10054:
                         common.GOOGLE_WINDOW_ACK = 0
-                        common.GOOGLE_WINDOW = min(common.GOOGLE_WINDOW+common.GOOGLE_WINDOW/2, 64)
+                        common.GOOGLE_WINDOW = min(int(round(common.GOOGLE_WINDOW*1.5)), 64)
                         common.GOOGLE_PREFER = 'https'
                         sys.stdout.write(common.info())
                 errors.append(str(e))
