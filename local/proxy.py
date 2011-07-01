@@ -536,8 +536,8 @@ class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         # for ssl proxy
         host, _, port = self.path.rpartition(':')
         keyFile, crtFile = RootCA.getCertificate(host)
-        self.send_response(200)
-        self.end_headers()
+        self.log_request(200)
+        self.connection.send('%s 200 OK\r\n\r\n' % self.protocol_version)
         try:
             ssl_sock = ssl.wrap_socket(self.connection, keyFile, crtFile, True)
         except ssl.SSLError, e:
@@ -557,7 +557,7 @@ class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             # newline(\r\n)?
             first_line += data
             if '\n' in first_line:
-                first_line, data = first_line.split('\n', 1)
+                first_line, _, data = first_line.partition('\r\n')
                 first_line = first_line.rstrip('\r')
                 break
         # got path, rewrite
@@ -566,16 +566,12 @@ class GaeProxyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             path = 'https://%s%s' % (host if port=='443' else self.path, path)
         # connect to local proxy server
         localhost = {'0.0.0.0':'127.0.0.1','::':'::1'}.get(common.LISTEN_IP, common.LISTEN_IP)
-        localport = common.LISTEN_PORT
         sock = socket.socket(LocalProxyServer.address_family, socket.SOCK_STREAM)
-        sock.connect((localhost, localport))
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32*1024)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32*1024)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.connect((localhost, common.LISTEN_PORT))
         sock.send('%s %s %s\r\n%s' % (method, path, ver, data))
 
         # forward https request
-        ssl_sock.settimeout(1)
+        ssl_sock.settimeout(5)
         while True:
             try:
                 data = ssl_sock.read(8192)
